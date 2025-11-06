@@ -19,6 +19,9 @@ import torch
 
 import utils # we need this
 
+import diffpure_utils
+from diffpure_utils import SDE_Adv_Model, parse_args_and_config, Logger
+
 
 ######### Prediction Fns #########
 
@@ -38,6 +41,40 @@ def basic_predict(model, x, device="cuda"):
 ####    - it needs to return logits
 #### Note: if your predict function operates on probabilities/labels (instead of logits), that is fine provided you adjust the rest of the code.
 #### Put your code here
+
+@torch.no_grad()
+def diffpure_predict(model, x, device="cuda"):
+    
+    args, config = parse_args_and_config()
+    
+    args.classifier = model
+    
+    log_dir = os.path.join(args.image_folder, args.classifier_name,
+                           'seed' + str(args.seed), 'data' + str(args.data_seed))
+    os.makedirs(log_dir, exist_ok=True)
+    args.log_dir = log_dir
+    logger = Logger(file_name=f'{log_dir}/log.txt', file_mode="w+", should_flush=True)
+
+    ngpus = torch.cuda.device_count()
+    adv_batch_size = args.adv_batch_size * ngpus
+    # print(f'ngpus: {ngpus}, adv_batch_size: {adv_batch_size}')
+
+    # load model
+    # print('starting the model and loader...')
+    new_model = SDE_Adv_Model(args, config, classifier=model)
+    if ngpus > 1:
+        new_model = torch.nn.DataParallel(new_model)
+    new_model = new_model.eval().to(config.device)
+    
+    
+    # --- SDE-based prediction (DiffPure path) ---
+    # print('starting the prediction with SDE...')
+    x = x.to(config.device if hasattr(config, "device") else device)
+    out = new_model(x)  # SDE_Adv_Model does purification + classification
+    logits = out[0] if isinstance(out, (tuple, list)) else out
+    
+    logger.close()
+    return logits
 
 
 ######### Membership Inference Attacks (MIAs) #########
@@ -139,10 +176,10 @@ if __name__ == "__main__":
     
     ### let's wrap the model prediction function so it could be replaced to implement a defense    
     ### Turn this to True to evaluate your defense (turn it back to False to see the undefended model).
-    defense_enabled = False 
+    defense_enabled = True
+    
     if defense_enabled:
-        predict_fn = None # ... TODO: your code here.
-        raise NotImplementedError()
+        predict_fn =  lambda x, dev: diffpure_predict(model, x, device=dev) #
     else:
         # predict_fn points to undefended model
         predict_fn = lambda x, dev: basic_predict(model, x, device=dev)

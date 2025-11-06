@@ -1,0 +1,59 @@
+/home/ssanjaya/blue/DiffPure/handout
+c0906a-s5.ufhpc
+Sat Nov  1 07:51:40 PM EDT 2025
+CUDA_HOME=/apps/compilers/cuda/12.9.1
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Tue_May_27_02:21:03_PDT_2025
+Cuda compilation tools, release 12.9, V12.9.86
+Build cuda_12.9.r12.9/compiler.36037853_0
+Python 3.11.3
+torch 2.9.0+cu128 cuda 12.8
+Sat Nov  1 19:51:47 2025       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 570.148.08             Driver Version: 570.148.08     CUDA Version: 12.8     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA B200                    On  |   00000000:61:00.0 Off |                    0 |
+| N/A   45C    P0            147W / 1000W |       0MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+cuda.is_available: True
+device_count: 1
+CUDA_VISIBLE_DEVICES: 0
+device 0: NVIDIA B200 capability: (10, 0)
+OK matmul on: NVIDIA B200 shape: torch.Size([1024, 1024])
+torch: 2.9.0+cu128 torch.cuda: 12.8
+### Python version: 3.11.3 | packaged by conda-forge | (main, Apr  6 2023, 08:57:19) [GCC 11.3.0]
+### NumPy version: 2.3.4
+### Pytorch version: 2.9.0+cu128
+------------
+--- Device: cuda ---
+-------------------
+
+------------ Loading Data & Model ----------
+Loaded model from ./target_model.pt -- hash: 0CCE0F932C863D6648E0.
+[Raw model] Train accuracy: 0.9343 ; Val accuracy: 0.8574.
+[Model] Train accuracy: 0.7940 ; Val accuracy: 0.7256.
+
+------------ Privacy Attacks ----------
+Simple Conf threshold MIA --- Attack acc: 53.32%; advantage: 0.066; precision: 0.556; recall: 0.332; f1: 0.416.
+Simple Logits threshold MIA --- Attack acc: 54.20%; advantage: 0.084; precision: 0.560; recall: 0.391; f1: 0.460.
+
+------------ Adversarial Examples ----------
+Attack0 [519D7F5E79C3600B366A] --- Benign acc: 79.50%; adversarial acc: 72.00%
+------------
+
+Elapsed time -- total: 1271.2 seconds (data & model loading: 7.0 seconds).
+Sat Nov  1 08:14:26 PM EDT 2025

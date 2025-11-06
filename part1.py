@@ -57,7 +57,7 @@ def simple_conf_threshold_mia(predict_fn, x, thresh=0.999, device="cuda"):
 ## A very simple logit threshold-based MIA
 """
 @torch.no_grad()
-def simple_logits_threshold_mia(predict_fn, x, thresh=9, device="cuda"):   
+def simple_logits_threshold_mia(predict_fn, x, thresh=11, device="cuda"):   
     pred_y = predict_fn(x, device).cpu().numpy()
     pred_y_max_logit = np.max(pred_y, axis=-1)
     return (pred_y_max_logit > thresh).astype(int)
@@ -65,7 +65,59 @@ def simple_logits_threshold_mia(predict_fn, x, thresh=9, device="cuda"):
     
 #### TODO [optional] implement new MIA attacks.
 #### Put your code here
-  
+@torch.no_grad()
+def label_only_aug_consistency_mia(predict_fn, x, num_perturbs=64, sigma=0.01, thresh=0.9, batch_size=256, device="cuda"):
+    x = x.to(device)
+    N = x.shape[0]
+
+    orig_logits = predict_fn(x, device).cpu()
+    orig_labels = torch.argmax(orig_logits, dim=1).to(device)  # (N,)
+
+    # compute for each sample how many perturbs preserve label
+    same_counts = torch.zeros(N, dtype=torch.int32, device=device)
+
+    with torch.no_grad():
+        for start in range(0, N, batch_size):
+            end = min(start + batch_size, N)
+            x_chunk = x[start:end]  # (B, C, H, W)
+            B = x_chunk.shape[0]
+
+            micro_bs = 16  # number of perturbation copies per pass
+            num_done = 0
+            preserved = torch.zeros(B, dtype=torch.int32, device=device)
+
+            while num_done < num_perturbs:
+                do = min(micro_bs, num_perturbs - num_done)  # how many per sample this pass
+                
+                x_repeat = x_chunk.unsqueeze(1).repeat(1, do, 1, 1, 1)  # (B, do, C, H, W)
+                x_repeat = x_repeat.view(B * do, *x_chunk.shape[1:])  # (B*do, C, H, W)
+
+                noise = torch.randn_like(x_repeat) * float(sigma)
+                perturbed = x_repeat + noise
+                
+                perturbed = torch.clamp(perturbed, 0.0, 1.0) # clamp
+
+                # query model
+                logits = predict_fn(perturbed, device)
+                labels = torch.argmax(logits.cpu(), dim=1).to(device)
+                labels = labels.view(B, do)  # (B, do)
+
+                # compare each perturbed label to original label for this chunk
+                orig_chunk_labels = orig_labels[start:end].unsqueeze(1).expand(-1, do)  
+                matches = (labels == orig_chunk_labels).sum(dim=1).to(torch.int32) 
+
+                preserved += matches 
+                num_done += do
+
+            same_counts[start:end] = preserved
+
+    fractions = same_counts.float() / float(num_perturbs)
+    preds = (fractions <= float(thresh)).cpu().numpy().astype(int)
+    print("fractions stats:", fractions.min().item(), fractions.max().item(),
+      fractions.mean().item())
+
+    return preds
+
   
 ######### Adversarial Examples #########
 
@@ -156,11 +208,11 @@ if __name__ == "__main__":
     
     ### evaluating the privacy of the model wrt membership inference
     # load the data
-    in_x, in_y = load_and_grab('./data/members.npz', 'members', num_batches=2)
-    out_x, out_y = load_and_grab('./data/nonmembers.npz', 'nonmembers', num_batches=2)
+    in_x, in_y = load_and_grab('./data/train.npz', 'train', num_batches=2)
+    out_x, out_y = load_and_grab('./data/valtest.npz', 'test', num_batches=2)
     
     mia_eval_x = torch.cat([in_x, out_x], 0)
-    mia_eval_y = torch.cat([torch.ones_like(in_y), torch.zeros_like(out_y)], 0)
+    mia_eval_y = torch.cat([in_y, out_y], 0)
     mia_eval_y = mia_eval_y.cpu().detach().numpy().reshape((-1,1))
     
     assert mia_eval_x.shape[0] == mia_eval_y.shape[0]
@@ -170,6 +222,16 @@ if __name__ == "__main__":
     mia_attack_fns = []
     mia_attack_fns.append(('Simple Conf threshold MIA', simple_conf_threshold_mia))
     mia_attack_fns.append(('Simple Logits threshold MIA', simple_logits_threshold_mia))
+    mia_attack_fns.append(('Label-only aug consistency MIA',
+    lambda predict_fn, x, device: label_only_aug_consistency_mia(
+        predict_fn, x,
+        num_perturbs=32,    
+        sigma=0.02,       
+        thresh=0.7,         
+        batch_size=128,
+        device=device)))
+
+
     # add more lines here to add more attacks
     
     for i, tup in enumerate(mia_attack_fns):

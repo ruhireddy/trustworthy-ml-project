@@ -1,0 +1,2 @@
+Download Score SDE for CIFAR-10: (vp/cifar10_ddpmpp_deep_continuous: https://drive.google.com/file/d/16_-Ahc6ImZV5ClUc0vM5Iivf8OJ1VSif/view?usp=sharing)
+Put the pretrained model in the "pretrained/score_sde" directory.

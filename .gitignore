@@ -1,0 +1,8 @@
+﻿.venv/
+venv/
+__pycache__/
+*.pyc
+data/*.npz
+target_model.pt
+*.joblib
+results/

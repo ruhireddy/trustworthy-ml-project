@@ -24,6 +24,13 @@ from torchvision.datasets import CIFAR10
 from torch.utils.data import DataLoader, TensorDataset
 
 import torchvision.transforms as T
+import joblib
+import os
+from math import ceil
+import torch
+import numpy as np
+from catboost import CatBoostClassifier
+from sklearn.metrics import confusion_matrix, precision_recall_fscore_support, roc_curve, auc
 
 
 # CIFAR-10 stuff
@@ -309,3 +316,102 @@ def eval_model_samples(model, xs, ys, device="cuda"):
         correct += int(pred == y)
         total += 1
     return correct/total
+
+
+# ---- Begin: Shadow model Attack ----
+"""
+# Load a saved attack model from disk (supports joblib/pickle, CatBoost, XGBoost, LightGBM).
+# Detects the model type from the filename/extension and uses the appropriate loader so you get a usable model object.
+# Returns the model instance ready for .predict() or .predict_proba() (or the booster object for XGBoost/LightGBM).
+"""
+def load_attack_model(path):
+    if path.endswith(".joblib") or path.endswith(".pkl"):
+        return joblib.load(path)
+    # CatBoost model saved with CatBoostClassifier.save_model()
+    if "CatBoost" in os.path.basename(path) or path.endswith(".cbm") or path.endswith(".catboost"):
+        from catboost import CatBoostClassifier
+        model = CatBoostClassifier()
+        model.load_model(path)
+        return model
+    if path.endswith(".bst") or path.endswith(".xgb"):
+        import xgboost as xgb
+        bst = xgb.Booster()
+        bst.load_model(path)
+        return bst
+    if path.endswith(".txt") or path.endswith(".lgb"):
+        import lightgbm as lgb
+        bst = lgb.Booster(model_file=path)
+        return bst
+    # fallback try joblib
+    return joblib.load(path)
+
+"""
+# Run the model (via predict_fn) on a single input tensor batch and return the top-k probabilities.
+# Input: a torch.Tensor batch of shape (B, C, H, W); predict_fn must accept (batch, device) and return logits.
+# Output: NumPy array shaped (B, topk) with the top-k softmax probabilities per sample, sorted descending.
+"""
+@torch.no_grad()
+def compute_topk_probs_from_tensor(predict_fn, input_tensor, device, topk):
+    # run in smaller batches here if input_tensor is large
+    batch = input_tensor.to(device)
+    logits = predict_fn(batch, device)       # predict_fn returns logits (not probabilities)
+    probs = torch.softmax(logits, dim=1)
+    top_p, top_idx = probs.topk(topk, dim=1)  # shape (B, topk)
+    return top_p.cpu().numpy()
+
+"""
+# Compute top-k probability features for a large tensor by processing in batches.
+# Inputs: full tensor (N, C, H, W), desired topk, and the per-batch size used for inference to avoid OOM.
+# Output: concatenated NumPy array (N, topk) where each row contains that sample's top-k probs.
+"""
+def compute_topk_probs_batched(predict_fn, tensor_all, device, topk, batch_size=256):
+    n = tensor_all.shape[0]
+    out = []
+    for i in range(0, n, batch_size):
+        batch = tensor_all[i : i + batch_size]
+        topk_np = compute_topk_probs_from_tensor(predict_fn, batch, device, topk)
+        out.append(topk_np)
+    return np.concatenate(out, axis=0)  # shape (N, topk)
+
+
+"""
+### Run a trained attack model on feature rows and return binary membership predictions of shape (N,1).
+### Supports sklearn-like models (predict/predict_proba), CatBoost, XGBoost Booster, and LightGBM Booster.
+### For booster outputs that return probabilities, this function thresholds at 0.5 and returns 0/1 ints.
+"""
+def predict_membership_with_trained_attack(attack_model, features_np):
+    # If CatBoost or sklearn-like
+    if hasattr(attack_model, "predict_proba"):
+        preds_prob = attack_model.predict_proba(features_np)
+        # assume class 1 is member at index 1
+        preds = attack_model.predict(features_np)
+        return preds.reshape((-1,1))
+    # XGBoost Booster
+    if 'xgboost' in str(type(attack_model)).lower() or isinstance(attack_model, (type(None),)):
+        try:
+            import xgboost as xgb
+            if isinstance(attack_model, xgb.Booster):
+                dmat = xgb.DMatrix(features_np)
+                proba = attack_model.predict(dmat)
+                # if booster was trained binary: returns float proba; convert to 0/1 using 0.5
+                preds = (proba >= 0.5).astype(int)
+                return preds.reshape((-1,1))
+        except Exception:
+            pass
+    # LightGBM Booster
+    try:
+        import lightgbm as lgb
+        if isinstance(attack_model, lgb.Booster):
+            proba = attack_model.predict(features_np)
+            preds = (np.array(proba) >= 0.5).astype(int)
+            return preds.reshape((-1,1))
+    except Exception:
+        pass
+
+    # Last resort: try direct predict
+    try:
+        preds = attack_model.predict(features_np)
+        return np.array(preds).reshape((-1,1))
+    except Exception as e:
+        raise RuntimeError(f"Unable to use attack model to predict: {e}")
+

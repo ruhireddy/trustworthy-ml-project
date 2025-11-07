@@ -19,6 +19,11 @@ import torch
 
 import utils # we need this
 
+topk = 10
+batch_size = 256
+attack_model_path = "./attack_CIFAR10/CatBoostClassifier_0.7743046875"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+attack_model = utils.load_attack_model(attack_model_path)
 
 ######### Prediction Fns #########
 
@@ -64,7 +69,17 @@ def simple_logits_threshold_mia(predict_fn, x, thresh=9, device="cuda"):
     
     
 #### TODO [optional] implement new MIA attacks.
-#### Put your code here
+"""
+# MIA attack using shadow models, following the methodology of Shokri et al.
+"""
+@torch.no_grad()
+def trained_attack_mia(predict_fn, x_tensor, device=device):
+    # compute top-k probability features using your utils helper (batched)
+    features = utils.compute_topk_probs_batched(predict_fn, x_tensor, device=device, topk=topk, batch_size=batch_size)
+    # features: numpy array shape (N, topk)
+    preds = utils.predict_membership_with_trained_attack(attack_model, features)  # should return shape (N,1)
+    preds = np.array(preds).astype(int).reshape((-1, 1))
+    return preds
   
   
 ######### Adversarial Examples #########
@@ -170,6 +185,8 @@ if __name__ == "__main__":
     mia_attack_fns = []
     mia_attack_fns.append(('Simple Conf threshold MIA', simple_conf_threshold_mia))
     mia_attack_fns.append(('Simple Logits threshold MIA', simple_logits_threshold_mia))
+    mia_attack_fns.append(("Trained CatBoost MIA", trained_attack_mia))
+
     # add more lines here to add more attacks
     
     for i, tup in enumerate(mia_attack_fns):

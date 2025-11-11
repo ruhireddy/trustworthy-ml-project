@@ -11,19 +11,22 @@ import os
 import time
 
 import numpy as np
+# np.seterr(divide='ignore', invalid='ignore')
+
 
 import sklearn
 from sklearn.metrics import confusion_matrix
-
 import torch
-
 import utils # we need this
+from defense_generator import load_generator, defended_predict_with_generator
+
 
 topk = 10
 batch_size = 256
 attack_model_path = "./attack_CIFAR10/CatBoostClassifier_0.7743046875"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 attack_model = utils.load_attack_model(attack_model_path)
+generator = load_generator("./out/generator.pth", inp_dim=10, device=device)
 
 ######### Prediction Fns #########
 
@@ -43,7 +46,8 @@ def basic_predict(model, x, device="cuda"):
 ####    - it needs to return logits
 #### Note: if your predict function operates on probabilities/labels (instead of logits), that is fine provided you adjust the rest of the code.
 #### Put your code here
-
+# def predict_fn(x, device):
+#     return defended_predict_with_generator(model, x, generator, eps=0.08, device=device)
 
 ######### Membership Inference Attacks (MIAs) #########
 
@@ -154,10 +158,21 @@ if __name__ == "__main__":
     
     ### let's wrap the model prediction function so it could be replaced to implement a defense    
     ### Turn this to True to evaluate your defense (turn it back to False to see the undefended model).
-    defense_enabled = False 
+    defense_enabled = True
     if defense_enabled:
-        predict_fn = None # ... TODO: your code here.
-        raise NotImplementedError()
+        # Load the trained generator (produced by defense_generator.py)
+        generator_fp = "./out/generator.pth"
+        generator = load_generator(generator_fp, inp_dim=10, device=device)
+
+        # Define defended prediction function (wraps original model)
+        predict_fn = lambda x, dev: defended_predict_with_generator(
+            model,
+            x,
+            generator,
+            eps=0.08,     # perturbation budget (tune if needed)
+            device=dev
+        )
+        print("[INFO] MemGuard-style defense ENABLED (generator loaded).")
     else:
         # predict_fn points to undefended model
         predict_fn = lambda x, dev: basic_predict(model, x, device=dev)
@@ -202,9 +217,11 @@ if __name__ == "__main__":
         attack_tpr = tp / (tp + fn)
         attack_fpr = fp / (fp + tn)
         attack_adv = attack_tpr - attack_fpr
-        attack_precision = tp / (tp + fp)
-        attack_recall = tp / (tp + fn)
-        attack_f1 = tp / (tp + 0.5*(fp + fn))
+        eps = 1e-8
+        attack_precision = tp / (tp + fp + eps)
+        attack_recall    = tp / (tp + fn + eps)
+        attack_f1        = tp / (tp + 0.5 * (fp + fn) + eps)
+
         print(f"{attack_str} --- Attack acc: {100*attack_acc:.2f}%; advantage: {attack_adv:.3f}; precision: {attack_precision:.3f}; recall: {attack_recall:.3f}; f1: {attack_f1:.3f}.")
     
     

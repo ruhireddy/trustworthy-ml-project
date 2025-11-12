@@ -1,0 +1,2 @@
+﻿data/*.npz filter=lfs diff=lfs merge=lfs -text
+target_model.pt filter=lfs diff=lfs merge=lfs -text

@@ -16,6 +16,7 @@ import sklearn
 from sklearn.metrics import confusion_matrix
 
 import torch
+import torch.nn.functional as F
 
 import utils # we need this
 
@@ -40,6 +41,76 @@ def basic_predict(model, x, device="cuda"):
 #### Put your code here
 
 
+#### Helper Functions
+def total_var_min(x, weight=0.05, num_iters=1):
+    with torch.enable_grad():
+        # Copy inputs to compute TVM
+        x_smooth = x.clone().detach().requires_grad_(True)
+
+        # Create optimizer with learning rate 0.1
+        optimizer = torch.optim.Adam([x_smooth], lr=0.1)
+
+        for _ in range(num_iters):
+            # Clear previously computed gradients
+            optimizer.zero_grad()
+
+            # Keeps x_smooth close to original input
+            fidelity = F.mse_loss(x_smooth, x)
+
+            # Total variation computation
+            tv_h = torch.abs(x_smooth[:, :, 1:, :] - x_smooth[:, :, :-1, :]).mean()
+            tv_w = torch.abs(x_smooth[:, :, :, 1:] - x_smooth[:, :, :, :-1]).mean()
+            # tv_loss is smaller when pixel transitions are smoother
+            tv_loss = tv_h + tv_w
+            loss = fidelity + (weight * tv_loss)
+
+            # Compute gradient of loss with respect to x_smooth
+            loss.backward()
+            optimizer.step()
+
+    return x_smooth.detach()
+
+def temp_scaling(logits, temp=1.3):
+    # Temp over 1.3 causes errors
+    scaled_logits = logits / temp
+
+    return scaled_logits
+
+def top_conf_rounding(logits):
+    # Get top logit in each row
+    top_ind = torch.argmax(logits, dim=1, keepdim=True)
+    top_vals = torch.gather(logits, 1, top_ind)
+
+    # Round to one decimal place
+    top_vals_rounded = torch.round(top_vals * 10) / 10
+
+    # Create tensor of zeros with same shape
+    result = torch.zeros_like(logits)
+
+    # Put rounded top logits back into original positions
+    result.scatter_(1, top_ind, top_vals_rounded)
+
+    return result
+
+#### Prediction Functions
+
+def defended_predict(model, x, device="cuda"):
+    # Total Variance Minimization
+    x = total_var_min(x, 0.05, 1)
+
+    # General prediction
+    x = x.to(device)
+    logits = model(x)
+
+    # Temperature scaling
+    temp_scaled_logits = temp_scaling(logits, 1.25)
+
+    # Top-k/confidence rounding
+    top_rounded_logits = top_conf_rounding(temp_scaled_logits)
+
+    return top_rounded_logits.detach()
+
+
 ######### Membership Inference Attacks (MIAs) #########
 
 """
@@ -57,7 +128,7 @@ def simple_conf_threshold_mia(predict_fn, x, thresh=0.999, device="cuda"):
 ## A very simple logit threshold-based MIA
 """
 @torch.no_grad()
-def simple_logits_threshold_mia(predict_fn, x, thresh=9, device="cuda"):   
+def simple_logits_threshold_mia(predict_fn, x, thresh=11, device="cuda"):   
     pred_y = predict_fn(x, device).cpu().numpy()
     pred_y_max_logit = np.max(pred_y, axis=-1)
     return (pred_y_max_logit > thresh).astype(int)
@@ -139,10 +210,9 @@ if __name__ == "__main__":
     
     ### let's wrap the model prediction function so it could be replaced to implement a defense    
     ### Turn this to True to evaluate your defense (turn it back to False to see the undefended model).
-    defense_enabled = False 
+    defense_enabled = True 
     if defense_enabled:
-        predict_fn = None # ... TODO: your code here.
-        raise NotImplementedError()
+        predict_fn = lambda x, dev: defended_predict(model, x, device=dev)
     else:
         # predict_fn points to undefended model
         predict_fn = lambda x, dev: basic_predict(model, x, device=dev)
@@ -156,8 +226,8 @@ if __name__ == "__main__":
     
     ### evaluating the privacy of the model wrt membership inference
     # load the data
-    in_x, in_y = load_and_grab('./data/members.npz', 'members', num_batches=2)
-    out_x, out_y = load_and_grab('./data/nonmembers.npz', 'nonmembers', num_batches=2)
+    in_x, in_y = load_and_grab('./data/train.npz', 'train', num_batches=2)
+    out_x, out_y = load_and_grab('./data/valtest.npz', 'test', num_batches=2)
     
     mia_eval_x = torch.cat([in_x, out_x], 0)
     mia_eval_y = torch.cat([torch.ones_like(in_y), torch.zeros_like(out_y)], 0)

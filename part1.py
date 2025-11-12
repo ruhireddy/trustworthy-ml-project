@@ -11,17 +11,25 @@ import os
 import time
 
 import numpy as np
+# np.seterr(divide='ignore', invalid='ignore')
+
 
 import sklearn
 from sklearn.metrics import confusion_matrix
-
 import torch
-
 import utils # we need this
 
 import diffpure_utils
 from diffpure_utils import SDE_Adv_Model, parse_args_and_config, Logger
+from defense_generator import load_generator, defended_predict_with_generator
 
+
+topk = 10
+batch_size = 256
+attack_model_path = "./attack_CIFAR10/CatBoostClassifier_0.7743046875"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+attack_model = utils.load_attack_model(attack_model_path)
+generator = load_generator("./out/generator.pth", inp_dim=10, device=device)
 
 ######### Prediction Fns #########
 
@@ -41,7 +49,8 @@ def basic_predict(model, x, device="cuda"):
 ####    - it needs to return logits
 #### Note: if your predict function operates on probabilities/labels (instead of logits), that is fine provided you adjust the rest of the code.
 #### Put your code here
-
+# def predict_fn(x, device):
+#     return defended_predict_with_generator(model, x, generator, eps=0.08, device=device)
 @torch.no_grad()
 def diffpure_predict(model, x, device="cuda"):
     
@@ -156,7 +165,18 @@ def simple_logits_threshold_mia(predict_fn, x, thresh=11, device="cuda"):
     
     
 #### TODO [optional] implement new MIA attacks.
-#### Put your code here
+"""
+# MIA attack using shadow models, following the methodology of Shokri et al.
+"""
+@torch.no_grad()
+def trained_attack_mia(predict_fn, x_tensor, device=device):
+    # compute top-k probability features using your utils helper (batched)
+    features = utils.compute_topk_probs_batched(predict_fn, x_tensor, device=device, topk=topk, batch_size=batch_size)
+    # features: numpy array shape (N, topk)
+    preds = utils.predict_membership_with_trained_attack(attack_model, features)  # should return shape (N,1)
+    preds = np.array(preds).astype(int).reshape((-1, 1))
+    return preds
+
 @torch.no_grad()
 def label_only_aug_consistency_mia(predict_fn, x, num_perturbs=64, sigma=0.01, thresh=0.9, batch_size=256, device="cuda"):
     x = x.to(device)
@@ -286,7 +306,19 @@ if __name__ == "__main__":
     defense_enabled = True
     
     if defense_enabled:
-        predict_fn =  lambda x, dev: diffpure_predict(model, x, device=dev) #
+        # Load the trained generator (produced by defense_generator.py)
+        generator_fp = "./out/generator.pth"
+        generator = load_generator(generator_fp, inp_dim=10, device=device)
+
+        # Define defended prediction function (wraps original model)
+        predict_fn = lambda x, dev: defended_predict_with_generator(
+            model,
+            x,
+            generator,
+            eps=0.08,     # perturbation budget (tune if needed)
+            device=dev
+        )
+        print("[INFO] MemGuard-style defense ENABLED (generator loaded).")
     else:
         # predict_fn points to undefended model
         predict_fn = lambda x, dev: basic_predict(model, x, device=dev)
@@ -324,6 +356,8 @@ if __name__ == "__main__":
         device=device)))
 
     
+    mia_attack_fns.append(("Trained CatBoost MIA", trained_attack_mia))
+
     # add more lines here to add more attacks
     
     for i, tup in enumerate(mia_attack_fns):
@@ -339,9 +373,11 @@ if __name__ == "__main__":
         attack_tpr = tp / (tp + fn)
         attack_fpr = fp / (fp + tn)
         attack_adv = attack_tpr - attack_fpr
-        attack_precision = tp / (tp + fp)
-        attack_recall = tp / (tp + fn)
-        attack_f1 = tp / (tp + 0.5*(fp + fn))
+        eps = 1e-8
+        attack_precision = tp / (tp + fp + eps)
+        attack_recall    = tp / (tp + fn + eps)
+        attack_f1        = tp / (tp + 0.5 * (fp + fn) + eps)
+
         print(f"{attack_str} --- Attack acc: {100*attack_acc:.2f}%; advantage: {attack_adv:.3f}; precision: {attack_precision:.3f}; recall: {attack_recall:.3f}; f1: {attack_f1:.3f}.")
     
     ### evaluating the robustness of the model wrt adversarial examples

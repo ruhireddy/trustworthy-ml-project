@@ -19,9 +19,9 @@ from sklearn.metrics import confusion_matrix
 import torch
 import utils # we need this
 
-import diffpure_utils
-from diffpure_utils import SDE_Adv_Model, parse_args_and_config, Logger
-from defense_generator import load_generator, defended_predict_with_generator
+# import diffpure_utils
+# from diffpure_utils import SDE_Adv_Model, parse_args_and_config, Logger
+from defense_generator import load_generator, defended_predict_with_generator, memgard_diffpure
 
 
 topk = 10
@@ -49,41 +49,43 @@ def basic_predict(model, x, device="cuda"):
 ####    - it needs to return logits
 #### Note: if your predict function operates on probabilities/labels (instead of logits), that is fine provided you adjust the rest of the code.
 #### Put your code here
+
 # def predict_fn(x, device):
 #     return defended_predict_with_generator(model, x, generator, eps=0.08, device=device)
-@torch.no_grad()
-def diffpure_predict(model, x, device="cuda"):
-    
-    args, config = parse_args_and_config()
-    
-    args.classifier = model
-    
-    log_dir = os.path.join(args.image_folder, args.classifier_name,
-                           'seed' + str(args.seed), 'data' + str(args.data_seed))
-    os.makedirs(log_dir, exist_ok=True)
-    args.log_dir = log_dir
-    logger = Logger(file_name=f'{log_dir}/log.txt', file_mode="w+", should_flush=True)
 
-    ngpus = torch.cuda.device_count()
-    adv_batch_size = args.adv_batch_size * ngpus
-    # print(f'ngpus: {ngpus}, adv_batch_size: {adv_batch_size}')
+# @torch.no_grad()
+# def diffpure_predict(model, x, device="cuda"):
+    
+#     args, config = parse_args_and_config()
+    
+#     args.classifier = model
+    
+#     log_dir = os.path.join(args.image_folder, args.classifier_name,
+#                            'seed' + str(args.seed), 'data' + str(args.data_seed))
+#     os.makedirs(log_dir, exist_ok=True)
+#     args.log_dir = log_dir
+#     logger = Logger(file_name=f'{log_dir}/log.txt', file_mode="w+", should_flush=True)
 
-    # load model
-    # print('starting the model and loader...')
-    new_model = SDE_Adv_Model(args, config, classifier=model)
-    if ngpus > 1:
-        new_model = torch.nn.DataParallel(new_model)
-    new_model = new_model.eval().to(config.device)
+#     ngpus = torch.cuda.device_count()
+#     adv_batch_size = args.adv_batch_size * ngpus
+#     # print(f'ngpus: {ngpus}, adv_batch_size: {adv_batch_size}')
+
+#     # load model
+#     # print('starting the model and loader...')
+#     new_model = SDE_Adv_Model(args, config, classifier=model)
+#     if ngpus > 1:
+#         new_model = torch.nn.DataParallel(new_model)
+#     new_model = new_model.eval().to(config.device)
     
     
-    # --- SDE-based prediction (DiffPure path) ---
-    # print('starting the prediction with SDE...')
-    x = x.to(config.device if hasattr(config, "device") else device)
-    out = new_model(x)  # SDE_Adv_Model does purification + classification
-    logits = out[0] if isinstance(out, (tuple, list)) else out
+#     # --- SDE-based prediction (DiffPure path) ---
+#     # print('starting the prediction with SDE...')
+#     x = x.to(config.device if hasattr(config, "device") else device)
+#     out = new_model(x)  # SDE_Adv_Model does purification + classification
+#     logits = out[0] if isinstance(out, (tuple, list)) else out
     
-    logger.close()
-    return logits
+#     logger.close()
+#     return logits
 
 
 #### Defense: Randomized Smoothing + Temperature Scaling + Logit Clipping
@@ -140,6 +142,7 @@ def defense_predict(model, x, device="cuda",
     logits_clipped = torch.clamp(logits_scaled, -float(logit_clip), float(logit_clip))
 
     return logits_clipped
+
 
 ######### Membership Inference Attacks (MIAs) #########
 
@@ -306,11 +309,19 @@ if __name__ == "__main__":
     defense_enabled = True
     
     if defense_enabled:
+
+        # print("### Using diffpure_predict model for evaluation.")
+        # predict_fn =  lambda x, dev: diffpure_predict(model, x, device=dev)
+
+        print("### Using defense_predict model for evaluation.")
+        predict_fn = lambda x, dev: defense_predict(model, x, device=dev)
+
         # Load the trained generator (produced by defense_generator.py)
         generator_fp = "./out/generator.pth"
         generator = load_generator(generator_fp, inp_dim=10, device=device)
 
         # Define defended prediction function (wraps original model)
+        print("### Using defended_predict_with_generator model for evaluation.")
         predict_fn = lambda x, dev: defended_predict_with_generator(
             model,
             x,
@@ -319,6 +330,16 @@ if __name__ == "__main__":
             device=dev
         )
         print("[INFO] MemGuard-style defense ENABLED (generator loaded).")
+
+        print("### Using defended_predict_with_generator model for evaluation.")
+        predict_fn = lambda x, dev: memgard_diffpure(
+            model,
+            x,
+            generator,
+            eps=0.08,     # perturbation budget (tune if needed)
+            device=dev
+        )
+        
     else:
         # predict_fn points to undefended model
         predict_fn = lambda x, dev: basic_predict(model, x, device=dev)

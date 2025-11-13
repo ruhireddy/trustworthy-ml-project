@@ -256,6 +256,43 @@ def load_generator(fp: str, inp_dim: int, hidden: int = GEN_HIDDEN, device: str 
 # --------------------------
 # Deployment wrapper (runtime)
 # --------------------------
+import diffpure_utils
+from diffpure_utils import SDE_Adv_Model, parse_args_and_config, Logger
+
+@torch.no_grad()
+def diffpure_predict(model, x, device="cuda"):
+    
+    args, config = parse_args_and_config()
+    
+    args.classifier = model
+    
+    log_dir = os.path.join(args.image_folder, args.classifier_name,
+                           'seed' + str(args.seed), 'data' + str(args.data_seed))
+    os.makedirs(log_dir, exist_ok=True)
+    args.log_dir = log_dir
+    logger = Logger(file_name=f'{log_dir}/log.txt', file_mode="w+", should_flush=True)
+
+    ngpus = torch.cuda.device_count()
+    adv_batch_size = args.adv_batch_size * ngpus
+    # print(f'ngpus: {ngpus}, adv_batch_size: {adv_batch_size}')
+
+    # load model
+    # print('starting the model and loader...')
+    new_model = SDE_Adv_Model(args, config, classifier=model)
+    if ngpus > 1:
+        new_model = torch.nn.DataParallel(new_model)
+    new_model = new_model.eval().to(config.device)
+    
+    
+    # --- SDE-based prediction (DiffPure path) ---
+    # print('starting the prediction with SDE...')
+    x = x.to(config.device if hasattr(config, "device") else device)
+    out = new_model(x)  # SDE_Adv_Model does purification + classification
+    logits = out[0] if isinstance(out, (tuple, list)) else out
+    
+    logger.close()
+    return logits
+
 """
 Given target model and input batch x (torch.Tensor), returns defended logits.
     - model: returns logits
@@ -285,6 +322,59 @@ def defended_predict_with_generator(model: torch.nn.Module,
     p_new = torch.clamp(p_new, MIN_PROB, 1.0)
     p_new = p_new / p_new.sum(dim=1, keepdim=True)
     defended_logits = torch.log(p_new)
+    return defended_logits
+
+
+@torch.no_grad()
+def memgard_diffpure(model: torch.nn.Module,
+                                    x: torch.Tensor,
+                                    generator: Generator, p_rand=0.3,
+                                    eps: float = 0.08,
+                                    device: str = "cpu") -> torch.Tensor:
+    
+    args, config = parse_args_and_config()
+    device = torch.device(device)
+    
+    args.classifier = model
+    
+    log_dir = os.path.join(args.image_folder, args.classifier_name,
+                           'seed' + str(args.seed), 'data' + str(args.data_seed))
+    os.makedirs(log_dir, exist_ok=True)
+    args.log_dir = log_dir
+    logger = Logger(file_name=f'{log_dir}/log.txt', file_mode="w+", should_flush=True)
+
+    ngpus = torch.cuda.device_count()
+    adv_batch_size = args.adv_batch_size * ngpus
+
+    # load model
+    new_model = SDE_Adv_Model(args, config, classifier=model)
+    if ngpus > 1:
+        new_model = torch.nn.DataParallel(new_model)
+    new_model = new_model.eval().to(config.device)
+    
+    
+    # --- SDE-based prediction (DiffPure path) ---
+    x = x.to(config.device if hasattr(config, "device") else device)
+    # out = new_model(x)  # SDE_Adv_Model does purification + classification
+    # logits = out[0] if isinstance(out, (tuple, list)) else out
+    
+    logits = new_model(x)                      # (B, C)
+    probs = F.softmax(logits, dim=1)       # torch (B, C)
+    
+    # generator expects probs in same device/dtype
+    raw = generator(probs)
+    if p_rand > 0:
+        mask = (torch.rand(raw.shape[0]) < p_rand).to(raw.device)
+        noise = 0.02 * torch.randn_like(raw)
+        raw[mask] += noise[mask]
+    delta = eps * torch.tanh(raw)
+    p_new = probs + delta
+    p_new = torch.clamp(p_new, MIN_PROB, 1.0)
+    p_new = p_new / p_new.sum(dim=1, keepdim=True)
+    defended_logits = torch.log(p_new)
+
+    logger.close()
+
     return defended_logits
 
 

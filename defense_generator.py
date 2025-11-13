@@ -293,6 +293,7 @@ def diffpure_predict(model, x, device="cuda"):
     logger.close()
     return logits
 
+
 """
 Given target model and input batch x (torch.Tensor), returns defended logits.
     - model: returns logits
@@ -312,6 +313,7 @@ def defended_predict_with_generator(model: torch.nn.Module,
     logits = model(x)                      # (B, C)
     probs = F.softmax(logits, dim=1)       # torch (B, C)
     # generator expects probs in same device/dtype
+    generator = generator.to(device) 
     raw = generator(probs)
     if p_rand > 0:
         mask = (torch.rand(raw.shape[0]) < p_rand).to(raw.device)
@@ -362,6 +364,7 @@ def memgard_diffpure(model: torch.nn.Module,
     probs = F.softmax(logits, dim=1)       # torch (B, C)
     
     # generator expects probs in same device/dtype
+    generator = generator.to(device)
     raw = generator(probs)
     if p_rand > 0:
         mask = (torch.rand(raw.shape[0]) < p_rand).to(raw.device)
